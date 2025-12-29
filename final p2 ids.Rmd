@@ -1,0 +1,1059 @@
+---
+title: "Project 2 Write-Up"
+author: "Anurag Surve"
+date: "`r Sys.Date()`"
+output:
+  html_document:
+    code_folding: show
+    number_sections: true
+    toc: yes
+    toc_depth: 4
+    toc_float: yes
+  pdf_document:
+    toc: yes
+    toc_depth: '4'
+---
+
+```{r setup, include=FALSE}
+# some of common options (and the defaults) are: 
+# include=T, eval=T, echo=T, results='hide'/'asis'/'markup',..., collapse=F, warning=T, message=T, error=T, cache=T, fig.width=6, fig.height=4, fig.dim=c(6,4) #inches, fig.align='left'/'center','right', 
+knitr::opts_chunk$set(warning = F, results = "markup", message = F)
+# knitr::opts_chunk$set(warning = F, results = "hide", message = F)
+options(scientific=T, digits = 3) 
+
+```  
+#  Introduction
+- The Abalone Age Prediction project aims to predict the age of abalones using physical and biological features, leveraging machine learning techniques to create accurate and interpretable models. The project addresses key challenges such as multicollinearity, heteroscedasticity, and influential data points. By implementing multiple linear regression and decision tree models, we explore data-driven approaches to automate age prediction, which traditionally requires time-consuming manual methods.
+- Accurate age prediction is crucial for marine biologists and fisheries. Sustainable harvesting and conservation efforts depend on understanding the age distribution of abalone populations. This project contributes to the sustainable management of marine resources by automating age prediction.
+
+
+#  Loading all necessary packages 
+
+```{r Installing/Loading Packages, message=FALSE, warning=FALSE}
+
+library(readr)
+library(dplyr)
+library(car)
+library(lmtest)
+library(ggplot2)
+library(GGally)
+library(gridExtra)
+library(MASS)
+library(leaps)
+library(glmnet)
+library(caret)
+library(gbm)
+library(ggplot2)
+library(gridExtra) 
+library(grid)     
+library(dplyr)
+library(ggplot2)
+library(patchwork)
+library(gridExtra)
+library(ggplot2)
+library(reshape2)
+```
+#  Data Handling I
+
+##  Dataset Description and Meta Data
+We are using the Abalone dataset from the UCI Machine Learning Repository, accessible at UCI Machine Learning Repository - Abalone Dataset(https://archive.ics.uci.edu/dataset/1/abalone). This dataset contains 4177 observations and 9 Features, with each observation detailing physical attributes such as length, diameter, and weight, alongside the Rings attribute, which serves as an indicator for age estimation. 
+
+ 
+```{r, message=FALSE, warning=FALSE}
+abalone <- read_csv("Abalone_data.csv")
+
+is.factor(abalone$Sex)
+
+abalone$Sex <- as.factor(abalone$Sex)
+str(abalone, give.attr = FALSE)
+
+library(knitr)
+kable(abalone[1:10,], digits = 4,format = 'markdown')
+```
+
+- Categorial Variables
+
+| Sex           | Number of observations |
+| ---           | ---------------------- |
+|  M            |         1527 |
+|  F            |         1307 |
+|  I            |         1342 |
+
+- Numeric Variables
+
+|      | Length | Diameter | Height | Whole Weight | Shucked Weight  | Viscera Weight | Shell Weight | Rings |
+| ---- | ------ | -------- | ------ | ----- | ------- | ------- | ----- | ----- |
+| Min  | 15.0   | 11.00    | 0.0000 | 0.4   | 0.20    | 0.10    | 0.30  | 1     |
+|Median| 109.0  | 85.00    | 28.00  | 159.9 | 67.20   | 34.20   | 46.80 | 9     |
+| Mean | 104.8  | 81.58    | 27.91  | 165.8 | 71.88   | 36.12   | 47.77 | 9.932 |
+| Max  | 163.0  | 130.00   | 226.00 | 565.1 | 297.60  | 152.00  | 201.00| 29    |
+| Cor  | 0.557  | 0.5750   | 0.5581 | 0.5408| 0.4212  | 0.5043  | 0.6280| 1.000 | 
+ 
+ - Looking at the dataset summary, we can see that data is quite evenly distributed between the three factor levels of `male`, `female` and `infant`. 
+ 
+ - Also from we see that there are four different measure of weight i.e. `Whole_weight`, `Shucked_weight`, `Viscera_weight` and `Shell.weight`. `Whole_weight` is linear function of other weight predictors with Unknown mass of water/blood lost from shucking process. Also we observed that min value of predictor `Height` is 0.Practically this is not possible, we will investigate these observations to look closely.
+ 
+- Response variable:
+
+- The dependent variable Rings is included in the dataset. It was measured as the number of rings observed after cutting and examining an abalone. Although it does not denote the age of a given abalone directly, it determines it more-or-less perfectly. The age of an abalone equals Rings + 1.5 . Since this relationship holds reliably, Rings will be considered as the dependent variable. The number of rings measured in the data ranges from 1 to 29 and most of the abalone have between 5 and 15 rings. The distribution is slightly positively skewed as well but this does not pose any specific problems for the further analysis. (see plot below)
+
+##  Data Preprocessing 
+
+### Identifying Categorical Variables
+```{r}
+
+categoric_features <- colnames(abalone)[sapply(abalone, function(col) is.factor(col) || is.character(col))]
+
+categoric_features
+
+```
+### Identifying Numerical Variables
+```{r}
+numeric_features <- abalone %>% 
+  select_if(is.numeric) %>% 
+  colnames()
+numeric_features
+```
+###  Renaming Columns for Consistent Naming
+
+```{r}
+
+
+abalone <- abalone %>%
+  rename(
+      Whole_weight = `Whole weight`,
+      Shucked_weight = `Shucked weight`,
+      Viscera_weight = `Viscera weight`,
+      Shell_weight = `Shell weight`
+  )
+
+```
+# Exploratory Data Analysis I
+
+##  Histogram of All the Numeric Variables
+```{r}
+
+numeric_features <- colnames(abalone)[sapply(abalone, is.numeric)]
+# Create a list to store individual ggplot objects
+plots <- list()
+
+# Generate histograms for each numeric feature
+for (i in seq_along(numeric_features)) {
+  num_feat <- numeric_features[i]
+  p <- ggplot(abalone, aes_string(x = num_feat)) +
+    geom_histogram(aes(y = ..density..), color = "gray", 
+                   fill = scales::hue_pal()(length(numeric_features))[i], bins = 30) +
+    geom_density(color = "black", size = 1) +
+    labs(title = paste("Distribution of", num_feat),
+         x = num_feat,
+         y = "Density") +
+    theme_minimal(base_size = 12) +
+    theme(plot.title = element_text(hjust = 0.5, face = "bold"))
+  
+  # Print each plot to check
+  print(p)
+  
+  # Store the plot in the list
+  plots[[i]] <- p
+}
+
+```
+
+
+- **Length**: The distribution of length appears unimodal and slightly skewed, peaking around 0.6.
+- **Diameter**: The diameter is symmetrically distributed, with a peak near 0.4.
+- **Height**: Height has a strong positive skew, with most values concentrated below 0.3.
+- **Whole_weight**: The distribution of whole weight is right-skewed, with a peak around 1.
+- **Shucked_weight**: Shucked weight exhibits right skewness, peaking near 0.5.
+- **Viscera_weight**: The viscera weight distribution is slightly right-skewed, peaking around 0.2.
+- **Shell_weight**: Shell weight distribution is unimodal with a peak near 0.25.
+- **Rings**: The number of rings shows a slightly skewed distribution, peaking near 10, with a long tail.
+
+
+##  Boxplot of all the Numeric Variables w.r.t **Sex**
+```{r}
+
+
+for (num_feat in numeric_features) {
+  p <- ggplot(data = abalone, aes_string(x = "Sex", y = num_feat)) +
+    geom_boxplot(fill = "skyblue", outlier.color = "red", outlier.size = 1.5) + # Custom fill color
+    labs(
+      title = paste("Box Plot of", num_feat),
+      x = "Sex",
+      y = num_feat
+    ) +
+    theme_minimal(base_size = 14) +
+    theme(
+      plot.title = element_text(hjust = 0.5, face = "bold", size = 16),
+      axis.text = element_text(size = 12),
+      axis.title = element_text(size = 14)
+    )
+  
+  print(p)
+}
+
+
+```
+
+
+- **Length**: Male (M) and Female (F) abalones exhibit a higher median **Length** compared to Infant (I), with fewer outliers for M and F.
+- **Diameter**: Male (M) and Female (F) abalones show a higher median **Diameter** compared to Infant (I), with more outliers observed in M.
+- **Height**: The **Height** is consistent across all groups but shows significant outliers, particularly in Female (F) and Male (M).
+- **Whole_weight**: Males (M) and Females (F) have larger median **Whole_weight** compared to Infants (I), with many outliers in all groups.
+- **Shucked_weight**: **Shucked_weight** shows lower values for Infant (I) compared to Female (F) and Male (M), with significant outliers in all groups.
+- **Viscera_weight**: The median **Viscera_weight** is higher for Female (F) and Male (M) compared to Infant (I), with relatively more outliers in M.
+- **Shell_weight**: **Shell_weight** follows a similar trend, with Female (F) and Male (M) having higher weights and numerous outliers for I.
+- **Rings**: **Rings** show a higher median for Female (F) and Male (M) compared to Infant (I), with Female (F) having a larger range and more outliers.
+
+
+
+## Q-Q Plot of All the Numeric Variables w.r.t **Sex**
+```{r}
+
+numeric_features <- colnames(abalone)[sapply(abalone, is.numeric)]
+
+# Loop through each numeric feature and create Q-Q plots separately
+for (num_feat in numeric_features) {
+  # Generate the Q-Q plot
+  p <- ggplot(data = abalone, aes(sample = .data[[num_feat]])) +
+    stat_qq(color = "skyblue", size = 2) +  # Q-Q plot points
+    stat_qq_line(color = "red", linetype = "dashed", size = 1) +  # Reference line
+    labs(
+      title = paste("Q-Q Plot of", num_feat),
+      x = "Theoretical Quantiles",
+      y = "Sample Quantiles"
+    ) +
+    theme_minimal(base_size = 14) +
+    theme(
+      plot.title = element_text(hjust = 0.5, face = "bold", size = 16),
+      axis.text = element_text(size = 10),
+      axis.title = element_text(size = 12)
+    )
+  
+  print(p)
+}
+
+```
+
+
+- **Length**: The Q-Q plot for **Length** shows a slight deviation from the theoretical quantiles at the tails, suggesting minor deviations from normality.
+- **Diameter**: The Q-Q plot for **Diameter** is similar to **Length**, with slight deviations at the upper quantiles, indicating some non-normality in the distribution.
+- **Height**: The Q-Q plot for **Height** shows significant deviations from the line, particularly at the extremes, suggesting strong non-normality.
+- **Whole_weight**: The Q-Q plot for **Whole_weight** indicates deviations from normality, especially at higher quantiles, with a heavy tail observed.
+- **Shucked_weight**: The Q-Q plot for **Shucked_weight** shows minor deviations at the upper quantiles, indicating slight non-normality in the data.
+- **Viscera_weight**: The Q-Q plot for **Viscera_weight** exhibits deviations at the tails, suggesting potential outliers and non-normality.
+- **Shell_weight**: The Q-Q plot for **Shell_weight** highlights deviations at higher quantiles, indicating non-normality and potential skewness.
+- **Rings**: The Q-Q plot for **Rings** shows significant deviation from the theoretical quantiles, especially in the upper range, indicating strong non-normality.
+
+
+## Distribution of **Sex**
+```{r}
+
+categoric_feature <- colnames(abalone)[sapply(abalone, is.factor)][1]
+
+
+category_counts <- abalone %>%
+  count(.data[[categoric_feature]]) %>%
+  mutate(Percentage = n / sum(n) * 100)  
+
+ggplot(category_counts, aes(x = "", y = Percentage, fill = .data[[categoric_feature]])) +
+  geom_bar(stat = "identity", width = 1, color = "black") + 
+  coord_polar(theta = "y", start = 0) +  
+  scale_fill_brewer(palette = "Set3") +  
+  labs(
+    title = categoric_feature,
+    fill = categoric_feature
+  ) +
+  theme_void(base_size = 14) + 
+  theme(
+    plot.title = element_text(hjust = 0.5, face = "bold", size = 16),
+    legend.title = element_text(size = 14, face = "bold"),
+    legend.text = element_text(size = 12)
+  ) +
+  geom_text(
+    aes(label = sprintf("%.1f%%", Percentage)),
+    position = position_stack(vjust = 0.5),
+    size = 4,
+    color = "black"
+  )
+
+
+```
+
+- The pie chart shows the distribution of **Sex** among abalones, with Males (**M**) making up 36.6%, Infants (**I**) accounting for 32.1%, and Females (**F**) comprising 31.3% of the dataset.
+
+
+## Correlation Analysis
+```{r}
+
+numeric_features <- colnames(abalone)[sapply(abalone, is.numeric)]
+corr_matrix <- cor(abalone[, numeric_features], use = "complete.obs", method = "pearson")
+mask <- upper.tri(corr_matrix)
+
+
+corr_melt <- melt(corr_matrix)
+corr_melt <- corr_melt[!mask, ]
+
+ggplot(corr_melt, aes(Var1, Var2, fill = value)) +
+  geom_tile(color = "black", linewidth = 1) +  
+  scale_fill_gradient2(low = "red", high = "skyblue", mid = "white", midpoint = 0) +  
+  geom_text(aes(label = sprintf("%.2f", value)), size = 3.5, fontface = "bold", color = "black") + 
+  labs(title = "Correlation Plot", fill = "Correlation") +
+  theme_minimal(base_size = 14) +
+  theme(
+    plot.title = element_text(hjust = 0, face = "bold", size = 16, margin = margin(b = 10)),
+    axis.text.x = element_text(angle = 45, hjust = 1, size = 10),
+    axis.text.y = element_text(size = 10),
+    legend.title = element_text(size = 12),
+    legend.text = element_text(size = 10)
+  )
+
+```
+
+
+- First, there is high correlation in the data, indicating multicollinearity among predictors. For example, the correlation between **Diameter** and **Length** is extremely high, above 98.7%.
+- **Whole_weight** is highly correlated with other weight-related predictors, as it represents the sum of **Shucked_weight**, **Viscera_weight**, and **Shell_weight**.
+- The distributions of the predictor **Sex**, specifically for factor levels Female and Male, are very similar across all other predictors.
+- The shape of distributions is also significantly similar for Female and Male factor levels.
+- A potential improvement could be redefining the **Sex** feature to categorize it as Infant vs Non-Infant (where Non-Infant = Female and Male).
+- Most of the abalones have **Rings** ranging between 5 and 15, indicating a concentration in this age range.
+
+
+# Data Handling II
+
+## Unique Values in Sex Variable  
+```{r}
+unique(abalone$Sex)
+
+```
+
+- **Addition of variables**: We will update the abalone dataset to create new variable named Infant which will have values based on original value from Sex variable. It will have value of I, when Sex variable is I and NI otherwise.
+
+
+
+## Unique Values in Sex Variable  Reclassifying and Converting Sex to Infant vs Non-Infant
+```{r}
+abalone['Infant'] <- ifelse(abalone$Sex == 'I','I','NI')
+abalone$Infant <- as.factor(abalone$Infant)
+abalone$Sex <- as.factor(abalone$Sex)
+
+str(abalone)
+head(abalone)
+```
+
+
+## Rows with Zero Height
+```{r}
+kable(abalone[abalone$Height == 0,], digits = 4,format = 'markdown')
+
+```
+
+
+- We observed that the minimum value of the predictor **Height** is 0. Practically, this is not possible, so we will investigate these observations more closely.
+- Upon investigation, we found two observations where **Height** might not have been recorded properly, as other predictors seem to have valid values.
+- Additionally, the **Whole_weight** values for these observations are very small compared to the rest of the dataset and are below the first quantile.
+- This indicates that these might not be data errors. Therefore, we cannot exclude these observations from the dataset.
+
+
+# Exploratory Data Analysis II
+
+## ANOVA Test for Diameter Across Sex Categories
+```{r}
+# Perform ANOVA to test if there is a difference in Diameter across Sex categories
+anova_diameter_sex <- aov(Diameter ~ Sex, data = abalone)
+summary(anova_diameter_sex)
+
+```
+
+- There is a statistically significant difference in the Diameter measurements between the Sex groups (Male, Female, Infant). This suggests that the factor Sex plays an important role in explaining variations in Diameter.
+
+
+
+## ANOVA Test for Rings Across Sex Categories
+```{r}
+# Perform ANOVA to test if Rings differ significantly by Sex
+anova_rings_sex <- aov(Rings ~ Sex, data = abalone)
+summary(anova_rings_sex)
+```
+
+
+- The Rings (and by extension, age) also significantly differ by Sex, suggesting biological or environmental factors influencing these variables.
+
+
+# Data Handling III
+
+##  Calculating Weight Difference and Updating Dataset Structure
+
+```{r}
+abalone$weight.diff <- abalone$Whole_weight - (abalone$Viscera_weight + abalone$Shucked_weight + abalone$Shell_weight)
+str(abalone, give.attr = FALSE)
+
+```
+
+## Histogram of Weight Difference
+```{r}
+
+
+ggplot(abalone , aes(x = weight.diff))+
+
+geom_histogram(binwidth = 0.5, fill = "skyblue", color = "black")+
+  labs(
+    title = "Histogram of weight.diff",  
+    x = "Values",                 
+    y = "Frequency"               
+  ) +
+  theme_minimal() 
+
+
+
+```
+
+- The variable **Whole_weight** is expected to be a linear function of **Shucked_weight**, **Viscera_weight**, and **Shell_weight**, expressed as:
+- Whole_weight = Shucked_weight + Viscera_weight + Shell_weight + unknown mass of water/blood lost during the shucking process.
+- From the histogram of the newly added **weight.diff** variable, we observe that there are instances where **weight.diff** is negative.
+- A total of 153 observations have a combined weight greater than the **Whole_weight**. This is likely due to data entry errors.
+- Upon examining 10 such observations, we found no consistent pattern, and other values appeared correct. Therefore, we are confident that these are data entry errors.
+- As a result, we will exclude observations with negative **weight.diff** values from the dataset.
+
+
+##  Filtering Out Negative Weight Differences
+```{r}
+abalone <- abalone %>% filter(weight.diff >= 0)
+
+```
+
+
+# Model Building
+
+##  Splitting Data into Training and Testing Sets
+
+```{r}
+set.seed(123)
+train_index <- createDataPartition(abalone$Rings, p = 0.8, list = FALSE)
+abalone_train <- abalone[train_index, ]
+abalone_test <- abalone[-train_index, ]
+
+
+```
+#  Linear Regression Models
+
+## Full Model with all the Features/Variables 
+```{r}
+abalone_01 <- lm(Rings ~ Sex+Length+Diameter+Height+ Whole_weight
+               +Shucked_weight+Viscera_weight
+               +Shell_weight,data = abalone_train)
+summary(abalone_01)
+
+
+```
+### Evaluating Model Performance on Training Data
+```{r}
+# Predict on the training data
+train_pred_01 <- predict(abalone_01, newdata = abalone_train)
+
+# Compute RMSE for the training data
+train_rmse_01 <- sqrt(mean((train_pred_01 - abalone_train$Rings)^2))
+
+print(train_rmse_01)
+
+
+# Get the summary of the abalone_log_model_refit
+model_summary <- summary(abalone_01)
+
+# Extract R-squared using $ operator
+abalone_01_r_squared <- model_summary$r.squared
+cat("R-squared for abalone_log_model_refit:", abalone_01_r_squared, "\n")
+
+```
+### Evaluating Model Performance on Testing Data
+```{r}
+
+# Predict on the test data
+test_pred_01 <- predict(abalone_01, newdata = abalone_test)
+
+# Compute RMSE for the test data
+test_rmse_01 <- sqrt(mean((test_pred_01 - abalone_test$Rings)^2))
+
+print(test_rmse_01)
+
+
+```
+### Residual vs Fitted for Full Model
+```{r}
+plot(abalone_01 $fitted.values, residuals(abalone_01 ),
+     main = "Residuals vs Fitted (Full Model)", xlab = "Fitted Values", ylab = "Residuals")
+abline(h = 0, col = "red")
+
+
+```
+
+- The residuals show a slight funnel shape, suggesting heteroscedasticity, where the variance of residuals increases with fitted values.
+- There appears to be a slight non-linearity, as the residuals are not perfectly centered around the red horizontal line (y = 0).
+- Some extreme residuals (outliers) are observed, which could influence the model's predictions.
+- Overall, the model might benefit from further investigation, such as transformations or considering alternative predictors, to address the observed patterns.
+
+
+### Q-Q plot of Residuals for Full Model
+```{r}
+residuals <- residuals(abalone_01)
+
+# Create the QQ plot
+qqnorm(residuals, main = "QQ Plot of Residuals Full Model")
+qqline(residuals, col = "red")
+
+```
+
+- The Q-Q plot shows that the residuals generally follow the theoretical quantiles of a normal distribution, with deviations at the tails.
+- The heavy tails (both positive and negative) indicate potential outliers or non-normality in the residuals.
+- The central portion of the plot aligns well with the red line, suggesting that normality holds reasonably well for most residuals.
+- The deviations at the extremes may warrant further investigation, such as transforming the response variable or addressing influential data points.
+
+
+
+
+### VIF of Initial Model/Full Model
+```{r}
+faraway::vif(abalone_01)
+
+
+```
+
+
+
+### Partial Correlation coefficient between whole weight and rings.
+
+```{r}
+#check variabolity in high collinearity variables
+whole_weight_fit <- lm(Whole_weight ~ Sex + Length + Diameter + Height + Shucked_weight + Viscera_weight + Shell_weight, data=abalone_train)
+ 
+abalone_01_without_whole_weight <- lm(Rings ~ Sex + Length + Diameter + Height
+               + Shucked_weight + Viscera_weight + Shell_weight,data = abalone_train)
+
+```
+
+```{r}
+# Extract residuals from both models
+residuals_whole_weight <- resid(whole_weight_fit)
+residuals_rings <- resid(abalone_01_without_whole_weight)
+
+# Calculate the correlation between the two residuals
+correlation <- cor(residuals_whole_weight, residuals_rings)
+
+# Print the correlation
+print(correlation)
+
+
+
+```
+
+### VIF values after removing the whole weight 
+
+```{r}
+
+faraway::vif(abalone_01_without_whole_weight)
+
+```
+
+###  VIF values after removing the Length  
+```{r}
+
+length_whole_weight_fit <- lm(Length ~ Sex + Diameter + Height + Shucked_weight + Viscera_weight + Shell_weight, data=abalone_train)
+ 
+abalone_without_length_whole_weight  <- lm(Rings ~ Sex  + Diameter + Height
+               + Shucked_weight + Viscera_weight + Shell_weight,data = abalone_train)
+
+```
+
+```{r}
+faraway::vif(abalone_without_length_whole_weight)
+```
+
+- The VIF values are normalized to less than 10/close to 10 thus reducing the multicollinearity effect in the model
+
+## Linear Regression Model after tackling Multicoliinearity
+```{r}
+abalone_02 <- lm(Rings ~ Sex + Diameter + Height + Shucked_weight + Viscera_weight + Shell_weight,data = abalone_train)
+
+summary(abalone_02)
+
+```
+### Inference VIF after tackling Multicoliinearity
+```{r}
+faraway::vif(abalone_02)
+
+```
+### Evaluating Model Performance on Training Data
+```{r}
+# Predict on the training data
+train_pred_02 <- predict(abalone_02, newdata = abalone_train)
+
+# Compute RMSE for the training data
+train_rmse_02 <- sqrt(mean((train_pred_02 - abalone_train$Rings)^2))
+
+print(train_rmse_02)
+
+# Get the summary of the abalone_log_model_refit
+model_summary <- summary(abalone_02)
+
+# Extract R-squared using $ operator
+abalone_02_r_squared <- model_summary$r.squared
+cat("R-squared for abalone_log_model_refit:", abalone_02_r_squared, "\n")
+
+```
+### Evaluating Model Performance on Testing Data
+```{r}
+
+# Predict on the test data
+test_pred_02 <- predict(abalone_02, newdata = abalone_test)
+
+# Compute RMSE for the test data
+test_rmse_02 <- sqrt(mean((test_pred_02 - abalone_test$Rings)^2))
+
+print(test_rmse_02)
+
+```
+### Residual vs Fitted for Model After tackling Multicollinearity
+```{r}
+plot(abalone_02 $fitted.values, residuals(abalone_02 ),
+     main = "Residuals vs Fitted (After tackling Multicollinearity)", xlab = "Fitted Values", ylab = "Residuals")
+abline(h = 0, col = "red")
+
+
+```
+
+- The residuals show reduced variance compared to the initial model, indicating an improvement after addressing multicollinearity.
+- The funnel shape observed earlier is less pronounced, suggesting better homoscedasticity in the model.
+- There are still a few outliers, but their impact appears to be less significant.
+- The residuals are more evenly distributed around the red horizontal line, indicating a more stable relationship between predictors and the response variable.
+- Overall, the model performance has improved, but further refinements might still be necessary to address any remaining patterns.
+
+### Q-Q plot of Residuals for Model After tackling Multicollinearity
+```{r}
+residuals <- residuals(abalone_02)
+# Create the QQ plot
+qqnorm(residuals, main = "QQ Plot After tackling Multicollinearity ")
+qqline(residuals, col = "red")
+
+```
+
+- The Q-Q plot shows improved alignment of residuals with the theoretical quantiles, particularly in the central portion of the plot.
+- Deviations at the tails are still present, indicating some remaining non-normality or potential outliers.
+- Compared to the initial model, the heavy tails are less pronounced, suggesting a reduction in extreme residuals.
+- The improvements suggest that addressing multicollinearity had a positive impact on the model's residual behavior.
+- Further refinements, such as data transformations or handling outliers, could be considered to achieve better normality.
+
+
+## Linear Regression Model After Log Transformation
+
+```{r}
+abalone_log_model <- lm(log(Rings) ~ Sex + Diameter + Height + Shucked_weight + Viscera_weight + Shell_weight, data = abalone_train)
+
+
+summary(abalone_log_model)
+```
+### Evaluating Model Performance on Training Data
+```{r}
+# Predict on the training data
+train_pred_log_model <- predict(abalone_log_model, newdata = abalone_train)
+
+predicted <- exp(train_pred_log_model)
+
+# Compute RMSE for the training data
+train_rmse_log_model <- sqrt(mean((predicted - abalone_train$Rings)^2))
+
+print(train_rmse_log_model)
+# Get the summary of the abalone_log_model_refit
+model_summary <- summary(abalone_log_model)
+
+# Extract R-squared using $ operator
+log_model_r_squared <- model_summary$r.squared
+cat("R-squared for abalone_log_model_refit:", log_model_r_squared, "\n")
+
+```
+### Evaluating Model Performance on Testing Data
+```{r}
+
+# Predict on the test data
+test_pred_log_model <- predict(abalone_log_model, newdata = abalone_test)
+
+predicted <- exp(test_pred_log_model)
+
+# Compute RMSE for the training data
+test_rmse_log_model <- sqrt(mean((predicted - abalone_test$Rings)^2))
+
+print(test_rmse_log_model)
+
+```
+### Residual vs Fitted for Model with Log Transformation
+
+```{r}
+
+plot(abalone_log_model $fitted.values, residuals(abalone_log_model ),
+     main = "Residuals vs Fitted (Log Transformed)", xlab = "Fitted Values", ylab = "Residuals")
+abline(h = 0, col = "red")
+
+
+```
+
+- The residuals are more evenly distributed around the red horizontal line after applying the log transformation, indicating improved model performance.
+- The funnel-shaped pattern observed in previous plots has been reduced, suggesting that heteroscedasticity has been addressed to some extent.
+- There are fewer extreme residuals, which implies that the log transformation helped in stabilizing the variance.
+- Despite the improvements, some minor patterns in residuals still exist, indicating potential areas for further refinement.
+- Overall, the log transformation has significantly improved the model's fit and residual behavior.
+
+### Q-Q plot of Residuals for Model with Log Transformation
+```{r}
+residuals <- residuals(abalone_log_model)
+
+# Create the QQ plot
+qqnorm(residuals, main = "QQ Plot of Residuals(Log Transformed)")
+qqline(residuals, col = "red")
+
+```
+
+- The Q-Q plot shows that the residuals align closely with the theoretical quantiles, indicating improved normality after applying the log transformation.
+- Deviations at the tails are minimal, suggesting that the log transformation has effectively reduced extreme residuals.
+- The central portion of the plot follows the red line almost perfectly, confirming that the majority of residuals are normally distributed.
+- The transformation has addressed non-normality issues observed in the original residuals, leading to a better model fit.
+- Overall, the log-transformed model exhibits significantly improved residual behavior and aligns well with normality assumptions.
+
+
+### Tackling High Influencial/High Leverage Points 
+```{r}
+
+# Calculate Cook's Distance
+cooks_d <- cooks.distance(abalone_log_model)
+
+# Plot Cook's Distance
+plot(cooks_d, type = "h", main = "Cook's Distance", ylab = "Cook's Distance", xlab = "Index")
+abline(h = 4 / length(cooks_d), col = "red")  # Threshold line (default: 4/n)
+
+
+
+```
+
+```{r}
+
+# Calculate leverage values
+leverage <- hatvalues(abalone_log_model)
+
+# Plot leverage vs residuals
+plot(leverage, rstudent(abalone_log_model), main = "Leverage vs. Residuals",
+     xlab = "Leverage", ylab = "Studentized Residuals")
+abline(h = c(-2, 2), col = "red")  # Thresholds for studentized residuals
+abline(v = 2 * mean(leverage), col = "blue")  # Threshold for leverage (2 * mean)
+
+
+
+```
+
+```{r}
+# Identify points with high Cook's Distance
+high_cooks <- which(cooks_d > 4 / length(cooks_d))
+
+# Identify points with high leverage (greater than 2 times the mean)
+high_leverage <- which(leverage > 2 * mean(leverage))
+
+# Identify points with large studentized residuals (greater than ±2)
+high_residuals <- which(abs(rstudent(abalone_log_model)) > 2)
+
+# Combine all influential points
+influential_points <- unique(c(high_cooks, high_leverage, high_residuals))
+
+# Print influential points
+influential_points
+
+
+
+```
+
+```{r}
+
+# Calculate leverage and residuals
+leverage <- hatvalues(abalone_log_model)
+residuals <- residuals(abalone_log_model)
+
+# Identify points with high Cook's Distance
+high_cooks <- which(cooks_d > 4 / length(cooks_d))
+
+# Identify points with high leverage (greater than 2 times the mean)
+high_leverage <- which(leverage > 2 * mean(leverage))
+
+# Identify points with large studentized residuals (greater than ±2)
+high_residuals <- which(abs(rstudent(abalone_log_model)) > 2)
+
+# Combine all influential points
+influential_points <- unique(c(high_cooks, high_leverage, high_residuals))
+
+# Now, plot the data and highlight the influential points
+# For illustration, let's plot Leverage vs Residuals (common for influential point detection)
+plot(leverage, residuals, main = "Leverage vs Residuals", xlab = "Leverage", ylab = "Residuals", 
+     pch = 19, col = "black") # Plot all points in black
+
+# Add points for influential observations
+points(leverage[influential_points], residuals[influential_points], col = "red", pch = 19) # Red for influential points
+
+# Optionally, add a blue line at residuals = 0
+abline(h = 0, col = "blue", lwd = 2)
+
+
+```
+
+## Log Transformed Model after removing High Influence Points
+```{r}
+# Remove influential points from the dataset
+abalone_clean <- abalone_train[-influential_points, ]
+
+# Refit the model after removing influential points
+abalone_log_model_refit <- lm(log(Rings) ~ Sex + Diameter + Height + 
+                                 Shucked_weight + Viscera_weight + Shell_weight, 
+                                 data = abalone_clean)
+
+# Check the summary of the refitted model
+summary(abalone_log_model_refit)
+
+
+```
+### Evaluating Model Performance on Training Data
+```{r}
+train_pred_log_model_refit <- predict(abalone_log_model_refit, newdata = abalone_clean)
+
+predicted <- exp(train_pred_log_model_refit)
+
+# Compute RMSE for the training data
+train_rmse_log_model_refit <- sqrt(mean((predicted - abalone_clean$Rings)^2))
+
+print(train_rmse_log_model_refit)
+
+# Get the summary of the abalone_log_model_refit
+model_summary <- summary(abalone_log_model_refit)
+
+# Extract R-squared using $ operator
+log_model_refit_r_squared <- model_summary$r.squared
+cat("R-squared for abalone_log_model_refit:", log_model_refit_r_squared, "\n")
+
+
+```
+### Q-Q Plot for Model with Log Transformed Refit Model
+```{r}
+residuals <- residuals(abalone_log_model_refit)
+
+# Create the QQ plot
+qqnorm(residuals, main = "QQ Plot of Residuals (log transformed) Refit model")
+qqline(residuals, col = "red")
+
+```
+
+- The Q-Q plot shows that the residuals align well with the theoretical quantiles, indicating a strong improvement in normality.
+- Deviations at the tails are minimal, suggesting that extreme residuals have been effectively managed in the refit model.
+- The central portion of the plot closely follows the red line, confirming that the majority of residuals are normally distributed.
+- Compared to previous models, the refit model demonstrates better residual behavior and normality.
+- Despite these improvements, the overall fit of the model must still be evaluated carefully to ensure that it does not overfit the data.
+
+### Residual vs Fitted for Model with Log Transformed Refit Model
+```{r}
+
+plot(abalone_log_model_refit $fitted.values, residuals(abalone_log_model_refit ),
+     main = "Residuals vs Fitted (Log transformed Refit model)", xlab = "Fitted Values", ylab = "Residuals")
+abline(h = 0, col = "red")
+
+
+```
+
+- The residuals in the refit model show a tighter clustering around the red horizontal line, indicating improved model fit compared to previous iterations.
+- The variance appears consistent across the fitted values, suggesting that heteroscedasticity has been addressed effectively.
+- However, the pattern of residuals along distinct diagonal lines indicates some potential issues, possibly arising from data or feature engineering.
+- Despite the overall improvement in fit, this pattern hints at overfitting, as the refit model may be overly tuned to the training data.
+- While the residual behavior has improved, the overfitting concern limits the generalizability of the refit model.
+
+### Evaluating Model Performance on Testing Data
+```{r}
+
+# Predict on the test data
+test_pred_log_model_refit <- predict(abalone_log_model_refit, newdata = abalone_test)
+
+predicted <- exp(test_pred_log_model_refit)
+
+# Compute RMSE for the training data
+test_rmse_log_model_refit <- sqrt(mean((predicted - abalone_test$Rings)^2))
+
+print(test_rmse_log_model_refit)
+
+
+```
+
+## Decision Tree Regression
+```{r}
+# Load necessary libraries
+library(rpart)
+library(rpart.plot)
+
+# Build a regression tree model
+abalone_tree <- rpart(Rings ~ Sex + Diameter + Height + Shucked_weight + Viscera_weight + Shell_weight, 
+                      data = abalone_train, 
+                      method = "anova")
+
+# Visualize the regression tree
+rpart.plot(abalone_tree, 
+           main = "Regression Tree for Abalone Rings",
+           type = 3, 
+           extra = 101)
+
+# Summary of the regression tree model
+summary(abalone_tree)
+
+# Predict on the training data
+train_pred_tree <- predict(abalone_tree, newdata = abalone_train)
+
+# Compute RMSE for the training data
+train_rmse_tree <- sqrt(mean((train_pred_tree - abalone_train$Rings)^2))
+
+print(paste("Training RMSE for Regression Tree:", train_rmse_tree))
+
+# Predict on the test data
+test_pred_tree <- predict(abalone_tree, newdata = abalone_test)
+
+# Compute RMSE for the test data
+test_rmse_tree <- sqrt(mean((test_pred_tree - abalone_test$Rings)^2))
+
+print(paste("Test RMSE for Regression Tree:", test_rmse_tree))
+
+# Calculate R-squared for the training data
+ss_res_train <- sum((train_pred_tree - abalone_train$Rings)^2)
+ss_tot_train <- sum((abalone_train$Rings - mean(abalone_train$Rings))^2)
+train_r_squared_d<- 1 - (ss_res_train / ss_tot_train)
+print(paste("Training R-squared for Regression Tree:", train_r_squared_d))
+
+# Calculate R-squared for the test data
+ss_res_test <- sum((test_pred_tree - abalone_test$Rings)^2)
+ss_tot_test <- sum((abalone_test$Rings - mean(abalone_test$Rings))^2)
+test_r_squared_d<- 1 - (ss_res_test / ss_tot_test)
+print(paste("Test R-squared for Regression Tree:", test_r_squared_d))
+
+
+
+```
+
+
+- The regression tree identifies **Shell_weight** as the primary predictor for predicting the number of rings in abalones, suggesting its strong influence on the target variable.
+
+- Secondary splits involve **Shucked_weight** and **Sex**, indicating these variables also contribute significantly to the prediction of rings.
+
+- The tree effectively divides the dataset into smaller groups based on thresholds, such as **Shell_weight < 0.19** and **Shucked_weight >= 0.32**, capturing relationships between predictors and the response variable.
+
+- Leaf nodes represent distinct predictions for the number of rings, with **6 rings** being the smallest predicted value and **16 rings** being the largest.
+
+- The tree's structure is interpretable, providing clear decision rules that can be used to explain predictions, but the model's performance should be evaluated against other models to confirm its suitability.
+
+- The distribution of observations across nodes (e.g., **n = 656** for one node) suggests that certain thresholds capture larger portions of the data, emphasizing the importance of these splits. 
+
+### Pruning the Tree 
+```{r}
+# Perform cross-validation and prune the tree
+printcp(abalone_tree)  # Display cross-validation results
+optimal_cp <- abalone_tree$cptable[which.min(abalone_tree$cptable[,"xerror"]),"CP"]
+abalone_tree_pruned <- prune(abalone_tree, cp = optimal_cp)
+
+# Visualize the pruned tree
+rpart.plot(abalone_tree_pruned, 
+           main = "Pruned Regression Tree for Abalone Rings",
+           type = 3, 
+           extra = 101)
+# Predict on the training data
+train_pred_tree_pruned <- predict(abalone_tree, newdata = abalone_train)
+
+# Compute RMSE for the training data
+train_rmse_tree_pruned<- sqrt(mean((train_pred_tree - abalone_train$Rings)^2))
+
+print(paste("Training RMSE for Regression Tree:", train_rmse_tree))
+
+# Predict on the test data using the pruned tree
+test_pred_tree_pruned <- predict(abalone_tree_pruned, newdata = abalone_test)
+
+# Compute RMSE for the pruned tree on test data
+test_rmse_tree_pruned <- sqrt(mean((test_pred_tree_pruned - abalone_test$Rings)^2))
+
+print(paste("Test RMSE for Pruned Regression Tree:", test_rmse_tree_pruned))
+
+# Calculate R-squared for the pruned tree on training data
+ss_res_train_pruned <- sum((train_pred_tree_pruned - abalone_train$Rings)^2)
+ss_tot_train_pruned <- sum((abalone_train$Rings - mean(abalone_train$Rings))^2)
+train_r_squared_pruned <- 1 - (ss_res_train_pruned / ss_tot_train_pruned)
+print(paste("Training R-squared for Pruned Regression Tree:", train_r_squared_pruned))
+
+# Calculate R-squared for the pruned tree on test data
+ss_res_test_pruned <- sum((test_pred_tree_pruned - abalone_test$Rings)^2)
+ss_tot_test_pruned <- sum((abalone_test$Rings - mean(abalone_test$Rings))^2)
+test_r_squared_pruned <- 1 - (ss_res_test_pruned / ss_tot_test_pruned)
+print(paste("Test R-squared for Pruned Regression Tree:", test_r_squared_pruned))
+
+
+```
+
+
+- The pruned regression tree is identical in structure and predictions to the unpruned regression tree, indicating no significant differences between the two models.
+
+- Pruning typically aims to reduce complexity and enhance generalizability, but in this case, it has not resulted in any noticeable change, either in the splits or the predicted values.
+
+- Key predictors, such as **Shell_weight** and **Shucked_weight**, remain consistent in their influence, with **Shell_weight** continuing to serve as the primary predictor.
+
+- Predictions at the leaf nodes are unchanged, ranging from **6 rings** to **16 rings**, with the same decision paths.
+
+- The identical nature of the pruned and unpruned trees suggests that the original tree was already optimized and did not require further pruning.
+
+- Overall, the pruned regression tree performs and behaves exactly the same as the unpruned tree, providing no additional benefits or changes in interpretability or predictive power.
+
+
+
+# Model Comparison
+```{r}
+
+# Create a summary table using precomputed values
+comparison <- data.frame(
+  Model = c("Linear Model 1", "Linear Model 2", "Log-Transformed Model", "Log-Transformed Model Refit","Regression Tree", "Pruned Tree"),
+  Train_RMSE = c(train_rmse_01, # From abalone_01
+                 train_rmse_02, # From abalone_02
+                 train_rmse_log_model, # From abalone_log_model
+                 train_rmse_log_model_refit, # From abalone_log_model_refit
+                 train_rmse_tree, # From abalone_tree
+                 train_rmse_tree_pruned ), # From pruned tree
+  Test_RMSE = c(test_rmse_01, # From abalone_01
+                test_rmse_02, # From abalone_02
+                test_rmse_log_model, # From abalone_log_model
+                test_rmse_log_model_refit, # From abalone_log_model_refit
+                test_rmse_tree, # From abalone_tree
+                test_rmse_tree_pruned ), # From pruned tree
+  R_Squared = c(abalone_01_r_squared, # From abalone_01
+                abalone_02_r_squared, # From abalone_02
+                log_model_r_squared, # From abalone_log_model
+                log_model_refit_r_squared,# From abalone_log_model_refit
+                train_r_squared_d, # From regression tree
+                train_r_squared_pruned)# From pruned tree
+ 
+)
+
+# Print the table
+library(knitr)
+kable(comparison, digits = 4, format = "markdown", caption = "Model Performance Comparison")
+
+```
+- The **Log-Transformed Model** demonstrates a good balance between training and testing performance, with **Train RMSE** (2.29) and **Test RMSE** (2.41) being closely aligned, indicating strong generalizability.  
+- The model's **R-Squared** (0.584) shows that it explains a significant portion of the variance in the target variable while avoiding overfitting.  
+- Unlike the **Log-Transformed Model Refit**, which shows signs of overfitting due to the large gap between **Train RMSE** (1.66) and **Test RMSE** (2.42), the **Log-Transformed Model** maintains consistency across datasets.  
+- Other models, including the regression and pruned trees, underperform in both RMSE and **R-Squared**, making them less reliable.  
+- Overall, the **Log-Transformed Model** is the best fit due to its balance of performance metrics, making it the most suitable for predictions and analysis.  
+
+
+# Conclusion
+## Best Model
+- The Log-Transformed Regression Model emerged as the most robust, explaining the highest variance while effectively addressing model assumptions.
+
+## Insights
+- Shell_weight and Diameter are the strongest predictors of abalone age.
+- Transformations and data cleaning significantly improved model stability and performance.
+## Future Work
+- Explore ensemble methods (e.g., Random Forests) to improve predictive accuracy.
+- Incorporate additional features like environmental data to enhance model performance.
+
+
+
