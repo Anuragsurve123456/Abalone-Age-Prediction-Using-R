@@ -147,7 +147,3 @@ The refit model improved training performance but showed signs of overfitting.
   - `caret`, `glmnet`
   - `rpart`, `rpart.plot`
 
----
-
-## Repository Structure (Recommended)
-
